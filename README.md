@@ -1,20 +1,28 @@
 # VLESS to Clash Converter (Go)
 
-这是一个简单的 Go 语言工具，用于将 VLESS 链接批量转换为 Clash 的 YAML 配置文件。
+这是一个轻量级的 Go 语言工具，用于将 VLESS 链接批量转换为 Clash 的 YAML 配置文件。
 
-## 功能
-- 读取同目录下的 `vless.txt`
-- 自动解析 VLESS 链接参数 (UUID, IP, Port, Sni, PBK, SID 等)
-- 生成包含自动测速和故障转移策略的 `config.yaml`
+✨ **新特性：交互式粘贴模式！无需手动创建 txt 文件，直接复制粘贴即可生成。**
 
-## 如何使用
+## 核心功能
 
-1. 下载本工具或自行编译。
-2. 在同目录下创建一个名为 `vless.txt` 的文件。
-3. 将 VLESS 链接粘贴进去（一行一个）。
-4. 运行程序，即可生成 `config.yaml`。
+- 🚀 **交互式操作**：打开软件 -> 粘贴链接 -> 输入 OK -> 搞定。
+- ⚡ **批量处理**：支持一次性粘贴几十条 `vless://` 链接。
+- 🛠 **自动解析**：自动识别 UUID, IP, Port, Sni, Public Key (Reality), Short ID 等参数。
+- 📦 **完整配置**：生成的 `config.yaml` 包含自动测速 (Url-Test)、故障转移和全球直连策略组。
+- 🔒 **安全隐私**：所有转换过程均在本地完成，不会上传任何节点信息。
 
-## 编译方法
-```bash
-go mod init converter
-go build -ldflags="-s -w" -o converter.exe main.go
+## 如何使用 (Usage)
+
+### 方式一：直接运行 (Windows)
+1. 双击运行 `转换工具.exe`。
+2. 在弹出的黑色窗口中，**粘贴**你的 VLESS 链接（支持多行）。
+3. 粘贴完成后，按一下回车换行，输入 **`ok`** 并回车。
+4. 程序会自动在当前目录下生成 `config.yaml` 文件。
+
+### 方式二：自行编译 (Build from source)
+如果你安装了 Go 环境，可以自己编译源码：
+
+1. **初始化项目**
+   ```bash
+   go mod init converter
