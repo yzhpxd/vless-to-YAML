@@ -68,7 +68,7 @@ func main() {
 	scanner := bufio.NewScanner(os.Stdin)
 
 	fmt.Println("=============================================================================")
-	fmt.Println("          VLESS 转 Clash (v8.1 规则交互优化版)")
+	fmt.Println("          VLESS 转 Clash (v1.1 规则交互优化版)")
 	fmt.Println("=============================================================================")
 	
 	// --- 1. 读取 VLESS ---
@@ -447,3 +447,4 @@ func pause(scanner *bufio.Scanner) {
 	fmt.Println("\n按回车键退出...")
 	scanner.Scan()
 }
+
