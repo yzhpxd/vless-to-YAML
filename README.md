@@ -1,6 +1,6 @@
 # VLESS to Clash Converter (Go)
 
-这是一个轻量级的 Go 语言工具，用于将 VLESS 链接批量转换为 Clash 的 YAML 配置文件。
+这是一个轻量级的 Go 语言工具，用于将 VLESS 链接批量转换为 Clash 的 YAML 配置文件。开源的，go语言可以自由转换，生成自己需要的平台的程序，发现放到路由器里生成config.yaml很方便
 
 ✨ **新特性：交互式粘贴模式！无需手动创建 txt 文件，直接复制粘贴即可生成。**
 
@@ -26,3 +26,4 @@
 1. **初始化项目**
    ```bash
    go mod init converter
+
