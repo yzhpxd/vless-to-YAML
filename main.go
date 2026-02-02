@@ -17,20 +17,31 @@ import (
 // --- 数据结构 ---
 
 type Node struct {
-	Name, Server, Port, UUID, ServerName, PublicKey, ShortID, ClientFingerprint string
+	Type              string // vless 或 hysteria2
+	Name              string
+	Server            string
+	Port              string
+	UUID              string // VLESS的UUID
+	Password          string // Hy2的密码
+	ServerName        string // SNI
+	PublicKey         string // Reality公钥
+	ShortID           string // Reality ShortID
+	ClientFingerprint string // fp
+	SkipCertVerify    bool   // insecure
 }
 
 // 模式配置参数
 type ModeConfig struct {
 	Name            string
-	IsMini          bool   // 是否精简版
-	IsFull          bool   // 是否全分组
-	IsNoReject      bool   // 是否无广告拦截
-	UseAdblockPlus  bool   // 是否强力去广告
-	AutoGroupType   string // 自动选择组类型
-	UseCountryGroup bool   // 是否启用多国分组
-	TargetNetflix   string // 奈飞规则指向哪里
-	TargetGoogle    string // 谷歌规则指向哪里
+	IsProvider      bool   // ★ 0号：ShellClash专用 (只输出节点)
+	IsMini          bool   
+	IsFull          bool   
+	IsNoReject      bool   
+	UseAdblockPlus  bool   
+	AutoGroupType   string 
+	UseCountryGroup bool   
+	TargetNetflix   string 
+	TargetGoogle    string 
 }
 
 // 规则源 (ACL4SSR)
@@ -64,15 +75,14 @@ func main() {
 	outputFile := "config.yaml"
 	var nodes []Node
 	
-	// 全程单例 Scanner
 	scanner := bufio.NewScanner(os.Stdin)
 
 	fmt.Println("=============================================================================")
-	fmt.Println("          VLESS 转 Clash (v1.1 规则交互优化版)")
+	fmt.Println("          VLESS/Hy2 转 Clash (v1.2 修复版)")
 	fmt.Println("=============================================================================")
 	
-	// --- 1. 读取 VLESS ---
-	fmt.Println(">>> 步骤1: 请粘贴 VLESS 链接")
+	// --- 1. 读取链接 ---
+	fmt.Println(">>> 步骤1: 请粘贴链接 (支持 vless:// 和 hy2://)")
 	fmt.Println("    (支持多行，粘贴完毕后输入 ok 并回车)")
 	fmt.Println("-----------------------------------------------------------------------------")
 
@@ -82,32 +92,53 @@ func main() {
 			break
 		}
 		if line == "" { continue }
+		
+		// 自动识别协议
 		if strings.HasPrefix(line, "vless://") {
 			node, err := parseVless(line)
 			if err != nil {
-				fmt.Printf(" [跳过] %v\n", err)
+				fmt.Printf(" [VLESS错误] %v\n", err)
 			} else {
 				nodes = append(nodes, node)
-				fmt.Printf(" [已添加] %s\n", node.Name)
+				fmt.Printf(" [VLESS] %s\n", node.Name)
+			}
+		} else if strings.HasPrefix(line, "hy2://") || strings.HasPrefix(line, "hysteria2://") {
+			node, err := parseHy2(line)
+			if err != nil {
+				fmt.Printf(" [Hy2错误] %v\n", err)
+			} else {
+				nodes = append(nodes, node)
+				fmt.Printf(" [Hy2] %s\n", node.Name)
 			}
 		}
 	}
 
 	if len(nodes) == 0 {
-		fmt.Println("❌ 未检测到节点，请重启。")
+		fmt.Println("❌ 未检测到有效节点，请重启。")
 		pause(scanner)
 		return
 	}
 
-	// --- 2. 读取自定义规则 (已添加提示) ---
+	// --- 2. 读取自定义规则 ---
 	customRules := readCustomRules(scanner)
 
 	// --- 3. 选择模式 ---
-	modeIndex := showMenu17(scanner)
+	modeIndex := showMenu(scanner)
 	config := getModeConfig(modeIndex)
 	
 	fmt.Printf("\n🚀 正在生成 [%s] ...\n", config.Name)
-	fmt.Println("⏳ 正在并发下载 ACL4SSR 规则库，请稍候...")
+	
+	if config.IsProvider {
+		fmt.Println("ℹ️  Provider 模式：仅生成节点列表。")
+		fmt.Println("👉 请将生成的文件导入 ShellClash，然后在菜单里选择【规则模板】(如 DustinWin)。")
+	} else {
+		// 复杂模式
+		if customRules != "" {
+			fmt.Println("ℹ️  检测到自定义规则，将智能剔除 ACL4SSR 在线规则的重复项...")
+		} else {
+			fmt.Println("⏳ 正在并发下载 ACL4SSR 规则库...")
+		}
+	}
 
 	// --- 4. 生成内容 ---
 	content := generateYaml(nodes, config, customRules)
@@ -119,42 +150,37 @@ func main() {
 	} else {
 		fmt.Println("=============================================================================")
 		fmt.Printf("✅ 成功！已生成文件: %s\n", outputFile)
-		if customRules != "" {
-			fmt.Println("   ★ 已成功插入你的自定义规则 (优先匹配)。")
+		if config.IsProvider {
+			fmt.Println("★ 文件类型：Provider (仅节点，供 ShellClash 在线规则使用)")
+		} else {
+			fmt.Println("★ 文件类型：ACL4SSR 完整配置 (含分流规则)")
 		}
-		fmt.Println("   包含了在线抓取的数千条规则，断网可用。")
 		fmt.Println("=============================================================================")
 	}
 	
-	fmt.Println("\n按回车键退出...")
-	scanner.Scan() 
+	pause(scanner)
 }
 
-// 读取用户粘贴的自定义规则
 func readCustomRules(scanner *bufio.Scanner) string {
-	fmt.Println("\n>>> 步骤2: 请粘贴自定义规则 (放在所有规则最前面)")
-	fmt.Println("    例如: - DOMAIN-SUFFIX,baidu.com,DIRECT")
-	fmt.Println("    ⚠️  注意：粘贴完毕后，请按回车换行，输入 ok 并回车！") // 关键提示
-	fmt.Println("    (如果没有规则，直接输入 ok 跳过)")
-	fmt.Println("-----------------------------------------------------------------------------")
+	fmt.Println("\n>>> 步骤2: 请粘贴自定义规则")
+	fmt.Println("    (如果是模式 0，此步骤会被忽略，直接输 ok)")
+	fmt.Println("    -----------------------------------------------------------------------------")
 
 	var sb strings.Builder
 	for scanner.Scan() {
 		line := strings.TrimSpace(scanner.Text())
-		
-		if strings.ToLower(line) == "ok" || strings.ToLower(line) == "done" {
-			break
-		}
+		if strings.ToLower(line) == "ok" || strings.ToLower(line) == "done" { break }
 		if line == "" { continue }
-		
 		sb.WriteString("  " + line + "\n")
 	}
 	return sb.String()
 }
 
-// 17 个选项菜单
-func showMenu17(scanner *bufio.Scanner) int {
-	fmt.Println("\n>>> 步骤3: 请选择配置模式 (ACL4SSR 在线版复刻):")
+func showMenu(scanner *bufio.Scanner) int {
+	fmt.Println("\n>>> 步骤3: 请选择模式:")
+	fmt.Println("-----------------------------------------------------------------------------")
+	fmt.Println(" [0]  ★ ShellClash 专用源 (Provider) - 推荐")
+	fmt.Println("      说明：只生成 proxies 列表，给 ShellClash 导入后配合 DustinWin 规则使用。")
 	fmt.Println("-----------------------------------------------------------------------------")
 	fmt.Println(" [1]  ACL4SSR_Online 默认版")
 	fmt.Println(" [2]  ACL4SSR_Online_AdblockPlus 更多去广告")
@@ -180,16 +206,19 @@ func showMenu17(scanner *bufio.Scanner) int {
 		text := strings.TrimSpace(scanner.Text())
 		if text == "" { return 6 }
 		val, err := strconv.Atoi(text)
-		if err == nil && val >= 1 && val <= 17 { return val }
-		fmt.Print("❌ 输入错误，默认使用 [6]: ")
+		if err == nil { return 6 }
+		if val >= 0 && val <= 17 { return val }
+		return 6
 	}
 	return 6
 }
 
-// 获取模式配方
 func getModeConfig(mode int) ModeConfig {
 	c := ModeConfig{AutoGroupType: "url-test", TargetNetflix: "🎥 奈飞视频", TargetGoogle: "📢 谷歌服务"}
 	switch mode {
+	case 0:
+		c.Name = "ShellClash Provider (纯节点)"
+		c.IsProvider = true // ★ 仅输出 proxies
 	case 1: c.Name = "ACL4SSR_Online 默认版"
 	case 2: c.Name = "ACL4SSR_Online_AdblockPlus"; c.UseAdblockPlus = true
 	case 3: c.Name = "ACL4SSR_Online_MultiCountry"; c.UseCountryGroup = true
@@ -207,6 +236,9 @@ func getModeConfig(mode int) ModeConfig {
 	case 15: c.Name = "ACL4SSR_Online_Full_AdblockPlus"; c.IsFull = true; c.UseAdblockPlus = true
 	case 16: c.Name = "ACL4SSR_Online_Full_Netflix"; c.IsFull = true
 	case 17: c.Name = "ACL4SSR_Online_Full_Google"; c.IsFull = true
+	default:
+		c.Name = "ACL4SSR_Online_Mini"
+		c.IsMini = true
 	}
 	if c.IsMini {
 		c.TargetNetflix = "🚀 节点选择"
@@ -215,17 +247,28 @@ func getModeConfig(mode int) ModeConfig {
 	return c
 }
 
-// 核心生成逻辑
 func generateYaml(nodes []Node, c ModeConfig, customRules string) string {
 	var sb strings.Builder
-	sb.WriteString("socks-port: 7891\nallow-lan: true\nmode: Rule\nlog-level: info\nexternal-controller: 127.0.0.1:9090\n")
 
-	sb.WriteString("\nproxies:\n")
-	for _, n := range nodes {
-		sb.WriteString(fmt.Sprintf("  - {name: %s, server: %s, port: %s, type: vless, tls: true, packet-encoding: xudp, uuid: %s, servername: %s, host: %s, path: /, reality-opts: {public-key: %s, short-id: %s}, client-fingerprint: %s, skip-cert-verify: true, udp: true}\n",
-			n.Name, n.Server, n.Port, n.UUID, n.ServerName, n.ServerName, n.PublicKey, n.ShortID, n.ClientFingerprint))
+	// --- 0. 如果是 Provider 模式，只输出 proxies 块 ---
+	if c.IsProvider {
+		sb.WriteString("proxies:\n")
+		for _, n := range nodes {
+			writeNode(&sb, n)
+		}
+		return sb.String()
 	}
 
+	// --- 1. 基础头部 (Config模式) ---
+	sb.WriteString("port: 7890\nsocks-port: 7891\nallow-lan: true\nmode: Rule\nlog-level: info\nexternal-controller: 127.0.0.1:9090\n")
+
+	// --- 2. 写入节点 ---
+	sb.WriteString("\nproxies:\n")
+	for _, n := range nodes {
+		writeNode(&sb, n)
+	}
+
+	// --- 4. 复杂 ACL4SSR 模式逻辑 ---
 	countryGroups := map[string][]string{}
 	if c.UseCountryGroup {
 		countryGroups = classifyNodes(nodes)
@@ -256,34 +299,20 @@ func generateYaml(nodes []Node, c ModeConfig, customRules string) string {
 		writeAutoGroup(&sb, "♻️ 自动选择", c.AutoGroupType, nodes)
 	}
 
-	if c.UseCountryGroup {
-		for _, code := range []string{"HK", "TW", "JP", "SG", "US", "Other"} {
-			if list, ok := countryGroups[code]; ok && len(list) > 0 {
-				sb.WriteString(fmt.Sprintf("  - name: %s\n    type: url-test\n    url: http://www.gstatic.com/generate_204\n    interval: 300\n    tolerance: 50\n    proxies:\n", getCountryGroupName(code)))
-				for _, nodeName := range list {
-					sb.WriteString(fmt.Sprintf("      - %s\n", nodeName))
-				}
-			}
-		}
-	}
-
 	if !c.IsMini {
-		common := "select"
-		writeProxyGroup(&sb, "📲 电报消息", common)
-		writeProxyGroup(&sb, "📹 油管视频", common)
-		writeProxyGroup(&sb, "🎥 奈飞视频", common)
-		writeProxyGroup(&sb, "🌍 国外媒体", common)
-		writeProxyGroup(&sb, "Ⓜ️ 微软服务", common)
-		writeProxyGroup(&sb, "📢 谷歌服务", common)
-		writeProxyGroup(&sb, "🍎 苹果服务", common)
-		
+		writeProxyGroup(&sb, "📲 电报消息", "select")
+		writeProxyGroup(&sb, "📹 油管视频", "select")
+		writeProxyGroup(&sb, "🎥 奈飞视频", "select")
+		writeProxyGroup(&sb, "🌍 国外媒体", "select")
+		writeProxyGroup(&sb, "Ⓜ️ 微软服务", "select")
+		writeProxyGroup(&sb, "📢 谷歌服务", "select")
+		writeProxyGroup(&sb, "🍎 苹果服务", "select")
 		if c.IsFull {
-			writeProxyGroup(&sb, "🎮 游戏服务", common)
-			writeProxyGroup(&sb, "☁️ 微软云盘", common)
-			writeProxyGroup(&sb, "🚂 Steam", common)
+			writeProxyGroup(&sb, "🎮 游戏服务", "select")
+			writeProxyGroup(&sb, "☁️ 微软云盘", "select")
+			writeProxyGroup(&sb, "🚂 Steam", "select")
 		}
 	}
-
 	if !c.IsNoReject {
 		sb.WriteString("  - name: 🛑 广告拦截\n    type: select\n    proxies:\n      - REJECT\n      - DIRECT\n")
 	}
@@ -292,45 +321,62 @@ func generateYaml(nodes []Node, c ModeConfig, customRules string) string {
 
 	sb.WriteString("\nrules:\n")
 	
-	// ★★★ 写入用户粘贴的自定义规则 (最高优先级) ★★★
+	// 智能去重逻辑
+	exclusionMap := make(map[string]bool)
 	if customRules != "" {
 		sb.WriteString(customRules)
-	}
-
-	// 下载规则
-	rules := downloadRules()
-
-	processRule(&sb, rules[UrlLan], "🎯 全球直连", "")
-	if !c.IsNoReject {
-		processRule(&sb, rules[UrlBanAD], "🛑 广告拦截", "")
-		if c.UseAdblockPlus { processRule(&sb, rules[UrlBanProgramAD], "🛑 广告拦截", "") }
-	}
-
-	if !c.IsMini {
-		processRule(&sb, rules[UrlMicrosoft], "Ⓜ️ 微软服务", "")
-		processRule(&sb, rules[UrlApple], "🍎 苹果服务", "")
-		processRule(&sb, rules[UrlGoogle], c.TargetGoogle, "")
-		processRule(&sb, rules[UrlTelegram], "📲 电报消息", "")
-		processRule(&sb, rules[UrlNetflix], c.TargetNetflix, "")
-		
-		if c.IsFull {
-			processRule(&sb, rules[UrlOneDrive], "☁️ 微软云盘", "")
-			processRule(&sb, rules[UrlSteamCN], "🚂 Steam", "")
-			processRule(&sb, rules[UrlGames], "🎮 游戏服务", "")
+		lines := strings.Split(customRules, "\n")
+		for _, line := range lines {
+			parts := strings.Split(line, ",")
+			if len(parts) >= 2 {
+				exclusionMap[strings.TrimSpace(strings.ToLower(parts[1]))] = true
+			}
 		}
-		processRule(&sb, rules[UrlMedia], "🌍 国外媒体", "")
-		processRule(&sb, rules[UrlProxyLite], "🚀 节点选择", "")
-	} else {
-		processRule(&sb, rules[UrlProxyLite], "🚀 节点选择", "")
-		processRule(&sb, rules[UrlGoogle], "🚀 节点选择", "")
-		processRule(&sb, rules[UrlTelegram], "🚀 节点选择", "")
 	}
 
-	processRule(&sb, rules[UrlChinaDomain], "🎯 全球直连", "")
-	processRule(&sb, rules[UrlChinaIP], "🎯 全球直连", "no-resolve")
+	rules := downloadRules()
+	processRule(&sb, rules[UrlLan], "🎯 全球直连", "", exclusionMap)
+	if !c.IsNoReject {
+		processRule(&sb, rules[UrlBanAD], "🛑 广告拦截", "", exclusionMap)
+		if c.UseAdblockPlus { processRule(&sb, rules[UrlBanProgramAD], "🛑 广告拦截", "", exclusionMap) }
+	}
+	if !c.IsMini {
+		processRule(&sb, rules[UrlMicrosoft], "Ⓜ️ 微软服务", "", exclusionMap)
+		processRule(&sb, rules[UrlApple], "🍎 苹果服务", "", exclusionMap)
+		processRule(&sb, rules[UrlGoogle], c.TargetGoogle, "", exclusionMap)
+		processRule(&sb, rules[UrlTelegram], "📲 电报消息", "", exclusionMap)
+		processRule(&sb, rules[UrlNetflix], c.TargetNetflix, "", exclusionMap)
+		processRule(&sb, rules[UrlProxyLite], "🚀 节点选择", "", exclusionMap)
+		if c.IsFull {
+			processRule(&sb, rules[UrlOneDrive], "☁️ 微软云盘", "", exclusionMap)
+			processRule(&sb, rules[UrlSteamCN], "🚂 Steam", "", exclusionMap)
+			processRule(&sb, rules[UrlGames], "🎮 游戏服务", "", exclusionMap)
+		}
+		processRule(&sb, rules[UrlMedia], "🌍 国外媒体", "", exclusionMap)
+	} else {
+		processRule(&sb, rules[UrlProxyLite], "🚀 节点选择", "", exclusionMap)
+		processRule(&sb, rules[UrlGoogle], "🚀 节点选择", "", exclusionMap)
+		processRule(&sb, rules[UrlTelegram], "🚀 节点选择", "", exclusionMap)
+	}
+	processRule(&sb, rules[UrlChinaDomain], "🎯 全球直连", "", exclusionMap)
+	processRule(&sb, rules[UrlChinaIP], "🎯 全球直连", "no-resolve", exclusionMap)
 	sb.WriteString("  - MATCH,🐟 漏网之鱼\n")
 
 	return sb.String()
+}
+
+// --- 辅助函数 ---
+
+func writeNode(sb *strings.Builder, n Node) {
+	if n.Type == "vless" {
+		sb.WriteString(fmt.Sprintf("  - {name: %s, server: %s, port: %s, type: vless, tls: true, packet-encoding: xudp, uuid: %s, servername: %s, host: %s, path: /, reality-opts: {public-key: %s, short-id: %s}, client-fingerprint: %s, skip-cert-verify: true, udp: true}\n",
+			n.Name, n.Server, n.Port, n.UUID, n.ServerName, n.ServerName, n.PublicKey, n.ShortID, n.ClientFingerprint))
+	} else if n.Type == "hysteria2" {
+		skipCert := "false"
+		if n.SkipCertVerify { skipCert = "true" }
+		sb.WriteString(fmt.Sprintf("  - {name: %s, type: hysteria2, server: %s, port: %s, password: %s, sni: %s, skip-cert-verify: %s}\n",
+			n.Name, n.Server, n.Port, n.Password, n.ServerName, skipCert))
+	}
 }
 
 func writeAutoGroup(sb *strings.Builder, name, gType string, nodes []Node) {
@@ -357,7 +403,6 @@ func downloadRules() map[string]string {
 	var wg sync.WaitGroup
 	var mu sync.Mutex
 	client := http.Client{Timeout: 30 * time.Second}
-
 	for _, u := range urls {
 		wg.Add(1)
 		go func(urlStr string) {
@@ -376,15 +421,17 @@ func downloadRules() map[string]string {
 	return res
 }
 
-func processRule(sb *strings.Builder, content, target, extra string) {
+func processRule(sb *strings.Builder, content, target, extra string, exclusionMap map[string]bool) {
 	if content == "" { return }
 	for _, line := range strings.Split(content, "\n") {
 		line = strings.TrimSpace(line)
 		if line == "" || strings.HasPrefix(line, "#") || strings.HasPrefix(line, "//") { continue }
 		if idx := strings.Index(line, "#"); idx > 0 { line = strings.TrimSpace(line[:idx]) }
-		
+		parts := strings.Split(line, ",")
+		if len(parts) >= 2 {
+			if exclusionMap[strings.TrimSpace(strings.ToLower(parts[1]))] { continue }
+		}
 		if strings.Contains(line, ",") {
-			parts := strings.Split(line, ",")
 			if len(parts) < 2 { continue }
 			if extra != "" {
 				sb.WriteString(fmt.Sprintf("  - %s,%s,%s,%s\n", parts[0], parts[1], target, extra))
@@ -430,21 +477,50 @@ func getCountryGroupName(code string) string {
 	}
 }
 
-func parseVless(link string) (Node, error) {
-	u, err := url.Parse(link)
-	if err != nil { return Node{}, err }
-	query := u.Query()
-	name := u.Fragment
-	if name == "" { name = "unknown" }
-	name, _ = url.QueryUnescape(name)
-	return Node{
-		Name: name, Server: u.Hostname(), Port: u.Port(), UUID: u.User.Username(),
-		ServerName: query.Get("sni"), PublicKey: query.Get("pbk"), ShortID: query.Get("sid"), ClientFingerprint: query.Get("fp"),
-	}, nil
-}
-
 func pause(scanner *bufio.Scanner) {
 	fmt.Println("\n按回车键退出...")
 	scanner.Scan()
 }
 
+// --- 链接解析器 ---
+
+func parseVless(link string) (Node, error) {
+	u, err := url.Parse(link)
+	if err != nil { return Node{}, err }
+	query := u.Query()
+	name := u.Fragment
+	if name == "" { name = "vless" }
+	name, _ = url.QueryUnescape(name)
+	return Node{
+		Type: "vless",
+		Name: name, Server: u.Hostname(), Port: u.Port(), UUID: u.User.Username(),
+		ServerName: query.Get("sni"), PublicKey: query.Get("pbk"), ShortID: query.Get("sid"), ClientFingerprint: query.Get("fp"),
+	}, nil
+}
+
+func parseHy2(link string) (Node, error) {
+	// 格式: hy2://password@server:port?sni=...&insecure=1#name
+	u, err := url.Parse(link)
+	if err != nil { return Node{}, err }
+	query := u.Query()
+	
+	name := u.Fragment
+	if name == "" { name = "hy2" }
+	name, _ = url.QueryUnescape(name)
+	
+	password := u.User.Username() // hy2://user@host
+	if password == "" {
+		// hy2://user:pass@host -> 这种情况下，u.User.Password() 返回 (pass, true)
+		p, ok := u.User.Password()
+		if ok { password = p }
+	}
+	
+	skipCert := false
+	if query.Get("insecure") == "1" { skipCert = true }
+
+	return Node{
+		Type: "hysteria2",
+		Name: name, Server: u.Hostname(), Port: u.Port(), Password: password,
+		ServerName: query.Get("sni"), SkipCertVerify: skipCert,
+	}, nil
+}
