@@ -2,6 +2,7 @@ package main
 
 import (
 	"bufio"
+	"encoding/base64"
 	"fmt"
 	"io"
 	"net/http"
@@ -17,12 +18,13 @@ import (
 // --- 数据结构 ---
 
 type Node struct {
-	Type              string // vless 或 hysteria2
+	Type              string // vless, hysteria2, ss
 	Name              string
 	Server            string
 	Port              string
 	UUID              string // VLESS的UUID
-	Password          string // Hy2的密码
+	Password          string // Hy2/SS的密码
+	Cipher            string // SS的加密方式
 	ServerName        string // SNI
 	PublicKey         string // Reality公钥
 	ShortID           string // Reality ShortID
@@ -78,11 +80,11 @@ func main() {
 	scanner := bufio.NewScanner(os.Stdin)
 
 	fmt.Println("=============================================================================")
-	fmt.Println("          VLESS/Hy2 转 Clash (v1.2 修复版)")
+	fmt.Println("          SS/VLESS/Hy2 转 Clash (v1.2 终极版)")
 	fmt.Println("=============================================================================")
 	
 	// --- 1. 读取链接 ---
-	fmt.Println(">>> 步骤1: 请粘贴链接 (支持 vless:// 和 hy2://)")
+	fmt.Println(">>> 步骤1: 请粘贴链接 (支持 ss:// vless:// hy2://)")
 	fmt.Println("    (支持多行，粘贴完毕后输入 ok 并回车)")
 	fmt.Println("-----------------------------------------------------------------------------")
 
@@ -109,6 +111,14 @@ func main() {
 			} else {
 				nodes = append(nodes, node)
 				fmt.Printf(" [Hy2] %s\n", node.Name)
+			}
+		} else if strings.HasPrefix(line, "ss://") {
+			node, err := parseSS(line)
+			if err != nil {
+				fmt.Printf(" [SS错误] %v\n", err)
+			} else {
+				nodes = append(nodes, node)
+				fmt.Printf(" [SS] %s\n", node.Name)
 			}
 		}
 	}
@@ -376,6 +386,9 @@ func writeNode(sb *strings.Builder, n Node) {
 		if n.SkipCertVerify { skipCert = "true" }
 		sb.WriteString(fmt.Sprintf("  - {name: %s, type: hysteria2, server: %s, port: %s, password: %s, sni: %s, skip-cert-verify: %s}\n",
 			n.Name, n.Server, n.Port, n.Password, n.ServerName, skipCert))
+	} else if n.Type == "ss" {
+		sb.WriteString(fmt.Sprintf("  - {name: %s, type: ss, server: %s, port: %s, cipher: %s, password: %s, udp: true}\n",
+			n.Name, n.Server, n.Port, n.Cipher, n.Password))
 	}
 }
 
@@ -484,6 +497,78 @@ func pause(scanner *bufio.Scanner) {
 
 // --- 链接解析器 ---
 
+func decodeBase64(s string) (string, error) {
+	s = strings.TrimSpace(s)
+	s = strings.ReplaceAll(s, "-", "+")
+	s = strings.ReplaceAll(s, "_", "/")
+	padding := len(s) % 4
+	if padding > 0 {
+		s += strings.Repeat("=", 4-padding)
+	}
+	b, err := base64.StdEncoding.DecodeString(s)
+	if err != nil {
+		return "", err
+	}
+	return string(b), nil
+}
+
+func parseSS(link string) (Node, error) {
+	u, err := url.Parse(link)
+	if err != nil { return Node{}, err }
+	
+	name := u.Fragment
+	if name == "" { name = "ss" }
+	name, _ = url.QueryUnescape(name)
+	
+	var method, password string
+	userInfo := u.User.String()
+	
+	if userInfo != "" {
+		// 尝试将 User 信息进行 Base64 解码 (标准的 ss:// 往往是 base64(method:password)@host:port)
+		decoded, err := decodeBase64(userInfo)
+		if err == nil && strings.Contains(decoded, ":") {
+			parts := strings.SplitN(decoded, ":", 2)
+			method = parts[0]
+			password = parts[1]
+		} else {
+			// 不是 Base64，那就是明文的 method:password
+			method = u.User.Username()
+			p, ok := u.User.Password()
+			if ok { password = p }
+		}
+	} else {
+		// 有时候整个 host 部分全是 base64，比如 ss://BASE64(method:pass@host:port)#name
+		decoded, err := decodeBase64(u.Host)
+		if err == nil && strings.Contains(decoded, "@") {
+			parts := strings.SplitN(decoded, "@", 2)
+			cred := parts[0]
+			serverInfo := parts[1]
+			
+			credParts := strings.SplitN(cred, ":", 2)
+			if len(credParts) == 2 {
+				method = credParts[0]
+				password = credParts[1]
+			}
+			
+			serverParts := strings.SplitN(serverInfo, ":", 2)
+			if len(serverParts) == 2 {
+				u.Host = serverParts[0] + ":" + serverParts[1]
+			} else {
+				u.Host = serverInfo
+			}
+		}
+	}
+
+	return Node{
+		Type:     "ss",
+		Name:     name,
+		Server:   u.Hostname(),
+		Port:     u.Port(),
+		Cipher:   method,
+		Password: password,
+	}, nil
+}
+
 func parseVless(link string) (Node, error) {
 	u, err := url.Parse(link)
 	if err != nil { return Node{}, err }
@@ -499,7 +584,6 @@ func parseVless(link string) (Node, error) {
 }
 
 func parseHy2(link string) (Node, error) {
-	// 格式: hy2://password@server:port?sni=...&insecure=1#name
 	u, err := url.Parse(link)
 	if err != nil { return Node{}, err }
 	query := u.Query()
@@ -508,9 +592,8 @@ func parseHy2(link string) (Node, error) {
 	if name == "" { name = "hy2" }
 	name, _ = url.QueryUnescape(name)
 	
-	password := u.User.Username() // hy2://user@host
+	password := u.User.Username() 
 	if password == "" {
-		// hy2://user:pass@host -> 这种情况下，u.User.Password() 返回 (pass, true)
 		p, ok := u.User.Password()
 		if ok { password = p }
 	}
